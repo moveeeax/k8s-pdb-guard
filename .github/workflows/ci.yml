@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Self-hosted ARC runner: runs-on == the gha-runner-scale-set release name.
+    runs-on: k8s-pdb-guard
+    steps:
+      - uses: actions/checkout@v4
+
+      # The self-hosted ARC runner is minimal; install the Go toolchain via apt
+      # rather than a download-based action (no xz for .tar.xz archives).
+      - name: Install Go
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y golang-go
+          go version
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -ldflags "-X github.com/moveeeax/k8s-pdb-guard/cmd.Version=${GITHUB_REF_NAME}" -o k8s-pdb-guard .
+
+      - name: Smoke test — blocking manifests exit non-zero
+        run: |
+          ./k8s-pdb-guard --version
+          if ./k8s-pdb-guard lint ./examples/manifests; then
+            echo "expected non-zero exit on blocking PDBs" >&2
+            exit 1
+          fi
+
+      - name: Smoke test — healthy manifest exits zero
+        run: ./k8s-pdb-guard lint ./examples/manifests/healthy.yaml

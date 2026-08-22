@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pct-pdb
+  namespace: prod
+spec:
+  minAvailable: 100%
+  selector:
+    matchLabels:
+      app: api

@@ -1,0 +1,12 @@
+# Built binary — anchored to repo root so it never matches a cmd/ source dir.
+/k8s-pdb-guard
+/pdbguard
+/dist/
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.txt
+
+# Always track fixtures under testdata/.
+!testdata/**

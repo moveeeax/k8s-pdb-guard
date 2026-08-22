@@ -1,0 +1,31 @@
+# A PDB with maxUnavailable: 0 permits zero voluntary evictions, so `kubectl
+# drain` on any node running these pods blocks forever. k8s-pdb-guard flags it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: checkout
+  template:
+    metadata:
+      labels:
+        app: checkout
+    spec:
+      containers:
+        - name: checkout
+          image: example/checkout:2.3.1
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: checkout-pdb
+  namespace: shop
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: checkout

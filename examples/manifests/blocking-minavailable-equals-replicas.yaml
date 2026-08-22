@@ -1,0 +1,31 @@
+# minAvailable equals the replica count, so no pod may ever be voluntarily
+# evicted. The autoscaler cannot rotate the node and drains hang.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cache
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      containers:
+        - name: cache
+          image: example/cache:7
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cache-pdb
+  namespace: shop
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: cache
