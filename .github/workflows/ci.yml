@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     # Self-hosted ARC runner: runs-on == the gha-runner-scale-set release name.
-    runs-on: k8s-pdb-guard
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
