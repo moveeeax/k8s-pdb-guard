@@ -1,7 +1,7 @@
 # k8s-pdb-guard
 
 [![CI](https://github.com/moveeeax/k8s-pdb-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/k8s-pdb-guard/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Catch `PodDisruptionBudget`s that will silently block a node drain — before a
@@ -26,6 +26,8 @@ Percentages follow Kubernetes rounding: `minAvailable` rounds **up**,
 `maxUnavailable` rounds **down**.
 
 ## Install
+
+Requires Go 1.26 or newer.
 
 ```shell
 go install github.com/moveeeax/k8s-pdb-guard@latest
