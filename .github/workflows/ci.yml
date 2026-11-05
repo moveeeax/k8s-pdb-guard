@@ -11,24 +11,26 @@ permissions:
 
 jobs:
   test:
-    # Self-hosted ARC runner: runs-on == the gha-runner-scale-set release name.
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26", "1.27"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # The self-hosted ARC runner is minimal; install the Go toolchain via apt
-      # rather than a download-based action (no xz for .tar.xz archives).
-      - name: Install Go
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y golang-go
-          go version
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Build
         run: go build -ldflags "-X github.com/moveeeax/k8s-pdb-guard/cmd.Version=${GITHUB_REF_NAME}" -o k8s-pdb-guard .
