@@ -7,6 +7,7 @@ package analyze
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Rule identifiers reported on findings.
@@ -16,7 +17,13 @@ const (
 	RuleZeroPodsMatched     = "ZeroPodsMatched"
 	RuleOverlappingPDB      = "OverlappingPDB"
 	RuleUnsupportedSelector = "UnsupportedSelector"
+	RuleNoDisruptionsNow    = "NoDisruptionsAllowedNow"
+	RuleUnhealthyPolicy     = "UnhealthyPodEvictionPolicyUnset"
 )
+
+// PolicyAlwaysAllow is the unhealthyPodEvictionPolicy value that lets running
+// but not-ready pods be evicted regardless of the budget.
+const PolicyAlwaysAllow = "AlwaysAllow"
 
 // IntOrPercent is a PDB minAvailable/maxUnavailable value. When IsPercent is
 // true, Value is a percentage (0-100); otherwise it is an absolute count.
@@ -65,6 +72,20 @@ type PDB struct {
 	// HasMatchExpressions records that the source selector used
 	// matchExpressions, which this MVP does not evaluate.
 	HasMatchExpressions bool
+	// UnhealthyPodEvictionPolicy is spec.unhealthyPodEvictionPolicy, "" when
+	// unset (Kubernetes then applies IfHealthyBudget).
+	UnhealthyPodEvictionPolicy string
+	// Status is the live status written by the disruption controller. It is nil
+	// for manifests, which have no status.
+	Status *PDBStatus
+}
+
+// PDBStatus mirrors the policy/v1 PodDisruptionBudgetStatus counters.
+type PDBStatus struct {
+	DisruptionsAllowed int
+	CurrentHealthy     int
+	DesiredHealthy     int
+	ExpectedPods       int
 }
 
 // Workload is a Deployment/StatefulSet/ReplicaSet (or a synthetic entry per live
@@ -75,6 +96,14 @@ type Workload struct {
 	Kind      string
 	Replicas  int
 	Labels    map[string]string
+	// Unready counts replicas that are running but not Ready. Only live pods
+	// set it; manifest workloads are assumed healthy.
+	Unready int
+	// Node is the node a live pod is scheduled on ("" for manifests).
+	Node string
+	// DrainExempt marks a live pod that `kubectl drain` does not evict
+	// (DaemonSet-owned or mirror pods), so no PDB can stall it.
+	DrainExempt bool
 }
 
 // Finding is a single reported problem with a PDB.
@@ -157,9 +186,35 @@ func Analyze(pdbs []PDB, workloads []Workload) []Finding {
 			continue
 		}
 
+		var unready []string
+		for _, w := range matched {
+			if w.Unready > 0 {
+				unready = append(unready, w.Name)
+			}
+		}
+		sort.Strings(unready)
+
+		if len(unready) > 0 && p.UnhealthyPodEvictionPolicy != PolicyAlwaysAllow {
+			policy := p.UnhealthyPodEvictionPolicy
+			if policy == "" {
+				policy = "unset (IfHealthyBudget)"
+			}
+			findings = append(findings, Finding{
+				Namespace: p.Namespace, Name: p.Name,
+				Rule:            RuleUnhealthyPolicy,
+				Message:         fmt.Sprintf("unhealthyPodEvictionPolicy is %s and %s not ready; unready pods cannot be evicted while the budget is unhealthy, set unhealthyPodEvictionPolicy: AlwaysAllow", policy, describePods(unready)),
+				MatchedReplicas: replicas,
+				Blocking:        false,
+			})
+		}
+
+		// specAllowed is the disruption count the spec permits; -1 means the PDB
+		// sets neither field and the spec math does not apply.
+		specAllowed := -1
 		switch {
 		case p.MaxUnavailable != nil:
 			allowed := p.MaxUnavailable.resolveMax(replicas)
+			specAllowed = allowed
 			if allowed <= 0 {
 				findings = append(findings, Finding{
 					Namespace: p.Namespace, Name: p.Name,
@@ -173,6 +228,7 @@ func Analyze(pdbs []PDB, workloads []Workload) []Finding {
 		case p.MinAvailable != nil:
 			min := p.MinAvailable.resolveMin(replicas)
 			allowed := replicas - min
+			specAllowed = allowed
 			if replicas > 0 && allowed <= 0 {
 				findings = append(findings, Finding{
 					Namespace: p.Namespace, Name: p.Name,
@@ -183,6 +239,24 @@ func Analyze(pdbs []PDB, workloads []Workload) []Finding {
 					Blocking:           true,
 				})
 			}
+		}
+
+		// Live status: the spec permits disruptions but the controller says none
+		// are allowed right now, usually because some pods are not Ready.
+		if p.Status != nil && specAllowed > 0 && p.Status.DisruptionsAllowed <= 0 {
+			cause := fmt.Sprintf("all %d matched pods are Ready, so some expected pods are missing or pending", replicas)
+			if len(unready) > 0 {
+				cause = describePods(unready) + " not ready"
+			}
+			findings = append(findings, Finding{
+				Namespace: p.Namespace, Name: p.Name,
+				Rule: RuleNoDisruptionsNow,
+				Message: fmt.Sprintf("status.disruptionsAllowed=%d (currentHealthy=%d, desiredHealthy=%d, expectedPods=%d) although the spec allows %d; %s; drains block until the pods recover",
+					p.Status.DisruptionsAllowed, p.Status.CurrentHealthy, p.Status.DesiredHealthy, p.Status.ExpectedPods, specAllowed, cause),
+				MatchedReplicas:    replicas,
+				AllowedDisruptions: p.Status.DisruptionsAllowed,
+				Blocking:           true,
+			})
 		}
 	}
 
@@ -222,6 +296,15 @@ func Analyze(pdbs []PDB, workloads []Workload) []Finding {
 		return findings[a].Rule < findings[b].Rule
 	})
 	return findings
+}
+
+// describePods renders a pod list for messages, e.g. `pods "a", "b" are`.
+func describePods(names []string) string {
+	quoted := quoteAll(names)
+	if len(names) == 1 {
+		return "pod " + quoted[0] + " is"
+	}
+	return "pods " + strings.Join(quoted, ", ") + " are"
 }
 
 func intersects(a, b map[string]struct{}) string {

@@ -20,7 +20,9 @@ that make voluntary disruptions impossible, exiting non-zero so it can gate CI.
 | `MinAvailableGEReplicas` | `minAvailable` ≥ the matched replica count leaves zero disruptions allowed. |
 | `ZeroPodsMatched` | The selector matches no workloads — a labelling typo that protects nothing. |
 | `OverlappingPDB` | A pod covered by two PDBs can never be evicted by the eviction API. |
+| `NoDisruptionsAllowedNow` | `scan` only: the spec allows disruptions, but the live `status.disruptionsAllowed` is 0, usually because some matched pods are not Ready. The message names them. |
 | `UnsupportedSelector` | Warning: `matchExpressions` are not evaluated by this MVP. |
+| `UnhealthyPodEvictionPolicyUnset` | Warning: some matched pods are running but not Ready and `unhealthyPodEvictionPolicy` is not `AlwaysAllow`, so those pods cannot be evicted while the budget is unhealthy. |
 
 Percentages follow Kubernetes rounding: `minAvailable` rounds **up**,
 `maxUnavailable` rounds **down**.
@@ -51,6 +53,21 @@ k8s-pdb-guard scan --all-namespaces
 
 # one namespace
 k8s-pdb-guard scan -n prod
+```
+
+Simulate a drain of one node before you start it. Only PDBs that would refuse
+evicting a pod on that node are reported, and each blocking finding lists the
+refused pods. The node scan covers every namespace unless `-n` is given:
+
+```shell
+k8s-pdb-guard scan --node worker-03
+```
+
+```text
+BLOCK shop/web-pdb [NoDisruptionsAllowedNow] status.disruptionsAllowed=0 (currentHealthy=2, desiredHealthy=2, expectedPods=3) although the spec allows 1; pod "web-7c9f-x2k" is not ready; drains block until the pods recover; refuses eviction of "web-7c9f-abc" on node worker-03
+WARN  shop/web-pdb [UnhealthyPodEvictionPolicyUnset] unhealthyPodEvictionPolicy is unset (IfHealthyBudget) and pod "web-7c9f-x2k" is not ready; unready pods cannot be evicted while the budget is unhealthy, set unhealthyPodEvictionPolicy: AlwaysAllow
+
+1 blocking, 1 warning(s) in node worker-03 (all namespaces)
 ```
 
 Gate a directory of manifests in CI — no cluster needed:
@@ -88,6 +105,17 @@ blocking.
   disk (`internal/manifest`) and derives replica counts from their specs.
 - `scan` lists PDBs and live pods with `client-go` (`internal/cluster`),
   treating each pod as one replica so identical rules apply to a real cluster.
+  Pods in `Succeeded`/`Failed` phase are skipped. It also reads the PDB status
+  (`disruptionsAllowed`, `currentHealthy`, `desiredHealthy`, `expectedPods`)
+  and pod readiness, which separates a temporarily unhealthy workload
+  (`NoDisruptionsAllowedNow`) from a budget that can never allow an eviction.
+  Status is ignored while `status.observedGeneration` is behind the PDB's
+  generation, since the controller has not caught up yet.
+- `scan --node` follows the eviction API rules: a pod covered by two PDBs is
+  always refused; a Ready pod needs a disruption the budget allows; a running
+  but not-Ready pod passes when `unhealthyPodEvictionPolicy` is `AlwaysAllow`,
+  or under the default `IfHealthyBudget` while `currentHealthy >= desiredHealthy`.
+  DaemonSet and mirror pods are skipped, as `kubectl drain` does not evict them.
 
 ## Development
 

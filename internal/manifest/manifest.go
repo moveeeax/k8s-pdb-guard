@@ -119,6 +119,9 @@ func convertPDB(p policyv1.PodDisruptionBudget) analyze.PDB {
 		out.MaxUnavailable = fromIntStr(*p.Spec.MaxUnavailable)
 	}
 	out.Selector, out.HasMatchExpressions = fromSelector(p.Spec.Selector)
+	if p.Spec.UnhealthyPodEvictionPolicy != nil {
+		out.UnhealthyPodEvictionPolicy = string(*p.Spec.UnhealthyPodEvictionPolicy)
+	}
 	return out
 }
 
