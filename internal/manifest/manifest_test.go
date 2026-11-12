@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -76,5 +77,33 @@ func TestPercentSelectorParsing(t *testing.T) {
 	}
 	if !pdbs[0].MinAvailable.IsPercent || pdbs[0].MinAvailable.Value != 100 {
 		t.Fatalf("expected 100%% minAvailable, got %+v", pdbs[0].MinAvailable)
+	}
+}
+
+func TestUnhealthyPodEvictionPolicyParsing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pdb.yaml")
+	doc := `apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-pdb
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app: web
+`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pdbs, _, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pdbs) != 1 || pdbs[0].UnhealthyPodEvictionPolicy != analyze.PolicyAlwaysAllow {
+		t.Fatalf("expected AlwaysAllow policy, got %+v", pdbs)
+	}
+	if pdbs[0].Status != nil {
+		t.Fatalf("manifests carry no status, got %+v", pdbs[0].Status)
 	}
 }

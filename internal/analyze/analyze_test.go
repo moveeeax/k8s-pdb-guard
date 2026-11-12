@@ -1,6 +1,9 @@
 package analyze
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func abs(v int) *IntOrPercent { return &IntOrPercent{Value: v} }
 func pct(v int) *IntOrPercent { return &IntOrPercent{Value: v, IsPercent: true} }
@@ -120,5 +123,98 @@ func TestEmptySelectorMatchesAll(t *testing.T) {
 	}
 	if f := findRule(fs, "catch-all", RuleMaxUnavailableZero); f == nil || !f.Blocking {
 		t.Fatalf("expected MaxUnavailableZero for empty-selector catch-all, got %+v", fs)
+	}
+}
+
+// livePod is a single-replica workload as built by the cluster package.
+func livePod(name, node string, unready bool) Workload {
+	w := Workload{Namespace: "default", Name: name, Kind: "Pod", Replicas: 1, Labels: map[string]string{"app": "web"}, Node: node}
+	if unready {
+		w.Unready = 1
+	}
+	return w
+}
+
+func TestNoDisruptionsAllowedNowNamesUnreadyPods(t *testing.T) {
+	// Spec allows 1 of 3, but one pod is unready so the controller says 0.
+	pdbs := []PDB{{
+		Namespace: "default", Name: "web-pdb", MaxUnavailable: abs(1), Selector: map[string]string{"app": "web"},
+		Status: &PDBStatus{DisruptionsAllowed: 0, CurrentHealthy: 2, DesiredHealthy: 2, ExpectedPods: 3},
+	}}
+	pods := []Workload{livePod("web-a", "n1", false), livePod("web-b", "n2", false), livePod("web-c", "n3", true)}
+	fs := Analyze(pdbs, pods)
+	f := findRule(fs, "web-pdb", RuleNoDisruptionsNow)
+	if f == nil || !f.Blocking {
+		t.Fatalf("expected blocking NoDisruptionsAllowedNow finding, got %+v", fs)
+	}
+	if !strings.Contains(f.Message, `pod "web-c" is not ready`) {
+		t.Fatalf("expected message to name web-c, got %q", f.Message)
+	}
+	if findRule(fs, "web-pdb", RuleMaxUnavailableZero) != nil {
+		t.Fatalf("spec rule should not fire when the spec allows disruptions, got %+v", fs)
+	}
+}
+
+func TestNoDisruptionsAllowedNowSkippedWhenStatusAllows(t *testing.T) {
+	pdbs := []PDB{{
+		Namespace: "default", Name: "web-pdb", MaxUnavailable: abs(1), Selector: map[string]string{"app": "web"},
+		Status: &PDBStatus{DisruptionsAllowed: 1, CurrentHealthy: 3, DesiredHealthy: 2, ExpectedPods: 3},
+	}}
+	fs := Analyze(pdbs, []Workload{livePod("web-a", "n1", false), livePod("web-b", "n2", false), livePod("web-c", "n3", false)})
+	if len(fs) != 0 {
+		t.Fatalf("expected no findings, got %+v", fs)
+	}
+}
+
+func TestNoDisruptionsAllowedNowNotDuplicatedForSpecBlock(t *testing.T) {
+	// maxUnavailable: 0 is already a permanent spec block; status 0 adds nothing.
+	pdbs := []PDB{{
+		Namespace: "default", Name: "web-pdb", MaxUnavailable: abs(0), Selector: map[string]string{"app": "web"},
+		Status: &PDBStatus{DisruptionsAllowed: 0, CurrentHealthy: 3, DesiredHealthy: 3, ExpectedPods: 3},
+	}}
+	fs := Analyze(pdbs, []Workload{web(3)})
+	if findRule(fs, "web-pdb", RuleNoDisruptionsNow) != nil {
+		t.Fatalf("expected only the spec finding, got %+v", fs)
+	}
+}
+
+func TestNoDisruptionsAllowedNowWithoutUnreadyPods(t *testing.T) {
+	// Status 0 while every matched pod is Ready: a replacement is missing.
+	pdbs := []PDB{{
+		Namespace: "default", Name: "web-pdb", MinAvailable: abs(1), Selector: map[string]string{"app": "web"},
+		Status: &PDBStatus{DisruptionsAllowed: 0, CurrentHealthy: 2, DesiredHealthy: 2, ExpectedPods: 3},
+	}}
+	fs := Analyze(pdbs, []Workload{livePod("web-a", "n1", false), livePod("web-b", "n2", false)})
+	f := findRule(fs, "web-pdb", RuleNoDisruptionsNow)
+	if f == nil || !strings.Contains(f.Message, "missing or pending") {
+		t.Fatalf("expected missing-pods hint, got %+v", fs)
+	}
+}
+
+func TestUnhealthyPodEvictionPolicyUnsetWarns(t *testing.T) {
+	pdbs := []PDB{{Namespace: "default", Name: "web-pdb", MaxUnavailable: abs(1), Selector: map[string]string{"app": "web"}}}
+	fs := Analyze(pdbs, []Workload{livePod("web-a", "n1", false), livePod("web-b", "n1", true)})
+	f := findRule(fs, "web-pdb", RuleUnhealthyPolicy)
+	if f == nil || f.Blocking {
+		t.Fatalf("expected non-blocking UnhealthyPodEvictionPolicyUnset warning, got %+v", fs)
+	}
+	if !strings.Contains(f.Message, "unset (IfHealthyBudget)") {
+		t.Fatalf("expected unset policy in message, got %q", f.Message)
+	}
+}
+
+func TestUnhealthyPodEvictionPolicyAlwaysAllowIsClean(t *testing.T) {
+	pdbs := []PDB{{Namespace: "default", Name: "web-pdb", MaxUnavailable: abs(1), Selector: map[string]string{"app": "web"}, UnhealthyPodEvictionPolicy: PolicyAlwaysAllow}}
+	fs := Analyze(pdbs, []Workload{livePod("web-a", "n1", false), livePod("web-b", "n1", true)})
+	if findRule(fs, "web-pdb", RuleUnhealthyPolicy) != nil {
+		t.Fatalf("AlwaysAllow should not warn, got %+v", fs)
+	}
+}
+
+func TestUnhealthyPodEvictionPolicyNoWarningWhenAllReady(t *testing.T) {
+	pdbs := []PDB{{Namespace: "default", Name: "web-pdb", MaxUnavailable: abs(1), Selector: map[string]string{"app": "web"}}}
+	fs := Analyze(pdbs, []Workload{livePod("web-a", "n1", false), livePod("web-b", "n1", false)})
+	if len(fs) != 0 {
+		t.Fatalf("expected no findings, got %+v", fs)
 	}
 }
